@@ -1,7 +1,7 @@
 import { connect } from 'cloudflare:sockets';
 
 // ✅ 你的UUID，支持多个逗号分隔
-const UUID = "f9c40315-ce84-4fb9-866e-589eea274e13";
+const UUID = "af871764-6fe8-4460-8f7c-7620f9d2673f";
 
 // ✅ 反代IP，支持多个逗号分隔
 const 反代IP = 'sg.wogg.us.kg';
@@ -303,9 +303,19 @@ async function processStream(request, responseWriter, proxyIP) {
 // ✅ _worker.js 标准入口
 export default {
   async fetch(request, env, ctx) {
-    const contentType = request.headers.get('content-type') || '';
+    // ✅ 参考大佬：Pages环境下content-type可能被修改
+    // 只要是POST请求就尝试处理，兼容性更强
+    if (request.method !== 'POST') {
+      return new Response('Not Found', { status: 404 });
+    }
 
-    if (request.method !== 'POST' || !contentType.startsWith('application/grpc')) {
+    const contentType = request.headers.get('content-type') || '';
+    // ✅ 放宽判断：application/grpc 或 application/octet-stream 都接受
+    const isGrpc = contentType.startsWith('application/grpc') || 
+                   contentType.startsWith('application/octet-stream') ||
+                   contentType.length === 0;
+
+    if (!isGrpc) {
       return new Response('Not Found', { status: 404 });
     }
 
