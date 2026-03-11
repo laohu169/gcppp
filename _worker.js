@@ -10,7 +10,6 @@ const MAX_CHUNK_LEN = 64 * 1024;
 const START_THRESHOLD = 50 * 1024 * 1024;
 const FLUSH_TIME = 20;
 
-// UUID验证
 const UUID_BYTES_SET = new Set(
   UUID.split(',').map(u => {
     const hex = u.trim().replace(/-/g, '');
@@ -47,7 +46,6 @@ async function 反代参数获取(request, 当前反代IP) {
   const url = new URL(request.url);
   const { pathname, searchParams } = url;
   const pathLower = pathname.toLowerCase();
-
   if (searchParams.has('proxyip')) {
     const ips = searchParams.get('proxyip').split(',');
     return ips[Math.floor(Math.random() * ips.length)].trim();
@@ -75,46 +73,36 @@ async function connectWithTimeout(hostname, port, timeoutMs) {
   return socket;
 }
 
-// ✅ 接收原始grpcData（含0x0A protobuf头），内部同时完成解析+UUID验证
 function extractVlessFromProtobuf(rawPayload) {
   if (!rawPayload || rawPayload.length < 5) throw new Error('[解析] payload太短');
   if (rawPayload[0] !== 0x0A) throw new Error('[解析] 非protobuf格式');
-
-  // 跳过varint长度字段
   let ptr = 1;
   while (ptr < rawPayload.length) {
     const b = rawPayload[ptr++];
     if (!(b & 0x80)) break;
   }
-
   const start = ptr;
   if (rawPayload.length < start + 18) throw new Error('[解析] header截断');
-
   const version = rawPayload[start];
-
-  // UUID在start+1位置
   if (!validateUUID(rawPayload, start + 1)) throw new Error('[验证] UUID不匹配');
-
   const addonLen = rawPayload[start + 17];
   const o1 = start + 18 + addonLen;
   if (rawPayload.length < o1 + 4) throw new Error('[解析] 地址段截断');
-
   const port = (rawPayload[o1 + 1] << 8) | rawPayload[o1 + 2];
   const addrType = rawPayload[o1 + 3];
   let o2 = o1 + 4, host, addrLen;
-
   switch (addrType) {
-    case 1: // IPv4
+    case 1:
       addrLen = 4;
       if (rawPayload.length < o2 + addrLen) throw new Error('[解析] IPv4截断');
       host = Array.from(rawPayload.slice(o2, o2 + addrLen)).join('.');
       break;
-    case 2: // 域名
+    case 2:
       addrLen = rawPayload[o2++];
       if (rawPayload.length < o2 + addrLen) throw new Error('[解析] 域名截断');
       host = new TextDecoder().decode(rawPayload.slice(o2, o2 + addrLen));
       break;
-    case 3: // IPv6
+    case 3:
       addrLen = 16;
       if (rawPayload.length < o2 + addrLen) throw new Error('[解析] IPv6截断');
       host = `[${Array.from({length: 8}, (_, i) =>
@@ -124,13 +112,7 @@ function extractVlessFromProtobuf(rawPayload) {
     default:
       throw new Error(`[解析] 未知地址类型 ${addrType}`);
   }
-
-  return {
-    host,
-    port,
-    vlessPayload: rawPayload.slice(o2 + addrLen),
-    version
-  };
+  return { host, port, vlessPayload: rawPayload.slice(o2 + addrLen), version };
 }
 
 function makeProtobufGrpcFrame(data) {
@@ -154,7 +136,6 @@ function makeProtobufGrpcFrame(data) {
   return frame;
 }
 
-// ✅ 背压pipe：BYOB读取 + 缓冲控制
 async function manualPipe(readable, responseWriter) {
   const _safe = BUFFER_SIZE - MAX_CHUNK_LEN;
   let mainBuf = new ArrayBuffer(BUFFER_SIZE);
@@ -182,9 +163,7 @@ async function manualPipe(readable, responseWriter) {
       if (done) break;
       mainBuf = value.buffer;
       const chunkLen = value.byteLength;
-
       if (chunkLen < MAX_CHUNK_LEN) {
-        // 小包直接发
         time = 2;
         if (chunkLen < 4096) totalBytes = 0;
         if (offset > 0) {
@@ -194,7 +173,6 @@ async function manualPipe(readable, responseWriter) {
           responseWriter.write(makeProtobufGrpcFrame(value.slice())).catch(() => {});
         }
       } else {
-        // 大包缓冲
         totalBytes += chunkLen;
         offset += chunkLen;
         if (!timerId) timerId = setTimeout(flush, time);
@@ -218,14 +196,11 @@ export default {
     if (request.method !== 'POST' || !contentType.startsWith('application/grpc')) {
       return new Response('Not Found', { status: 404 });
     }
-
     const 当前反代IP = await 反代参数获取(request, 反代IP);
     const { readable, writable } = new TransformStream();
     const responseWriter = writable.getWriter();
-
     processStream(request, responseWriter, 当前反代IP)
       .catch(e => console.error('[流异常]', e.message));
-
     return new Response(readable, {
       status: 200,
       headers: { 'Content-Type': 'application/grpc', 'grpc-status': '0' }
@@ -234,7 +209,6 @@ export default {
 };
 
 async function processStream(request, responseWriter, proxyIP) {
-  // ✅ BYOB Reader复用buffer
   const reader = request.body.getReader({ mode: 'byob' });
   let sessionBuffer = new ArrayBuffer(65536);
   let grpcBuf = new Uint8Array(0);
@@ -246,8 +220,6 @@ async function processStream(request, responseWriter, proxyIP) {
       const { done, value } = await reader.read(new Uint8Array(sessionBuffer, 0, 65536));
       if (done) break;
       sessionBuffer = value.buffer;
-
-      // 合并未处理数据
       if (grpcBuf.byteLength > 0) {
         const combined = new Uint8Array(grpcBuf.byteLength + value.byteLength);
         combined.set(grpcBuf);
@@ -256,19 +228,14 @@ async function processStream(request, responseWriter, proxyIP) {
       } else {
         grpcBuf = value.slice();
       }
-
       while (grpcBuf.byteLength >= 5) {
         const grpcLen = ((grpcBuf[1] << 24) >>> 0) | (grpcBuf[2] << 16) | (grpcBuf[3] << 8) | grpcBuf[4];
         if (grpcLen > MAX_GRPC_FRAME_SIZE) throw new Error(`[防护] 帧过大: ${grpcLen}`);
         if (grpcBuf.byteLength < 5 + grpcLen) break;
-
-        // ✅ 零拷贝取帧
         const grpcData = grpcBuf.subarray(5, 5 + grpcLen);
         grpcBuf = grpcBuf.subarray(5 + grpcLen);
-
         if (isFirst) {
           isFirst = false;
-          // ✅ 第一帧：传原始grpcData给extractVlessFromProtobuf（含0x0A头）
           let parsed;
           try {
             parsed = extractVlessFromProtobuf(grpcData);
@@ -276,10 +243,8 @@ async function processStream(request, responseWriter, proxyIP) {
             console.error('[解析/验证失败]', e.message);
             return;
           }
-
           const { host, port, vlessPayload, version } = parsed;
           console.log(`[Target] ${host}:${port}`);
-
           try {
             socket = await connectWithTimeout(host, port, DIRECT_TIMEOUT_MS);
             console.log(`[直连] ${host}:${port}`);
@@ -294,21 +259,15 @@ async function processStream(request, responseWriter, proxyIP) {
               return;
             }
           }
-
           remoteWriter = socket.writable.getWriter();
           await responseWriter.write(makeProtobufGrpcFrame(new Uint8Array([version, 0])));
           pipePromise = manualPipe(socket.readable, responseWriter);
-
           if (vlessPayload.length > 0) await remoteWriter.write(vlessPayload);
-
         } else {
-          // ✅ 后续帧：strip掉protobuf头再转发
           let p = (grpcData[0] === 0x0A) ? 1 : 0;
           while (p && (grpcData[p++] & 0x80));
           const payload = p === 0 ? grpcData : grpcData.subarray(p);
-          if (payload.length > 0 && remoteWriter) {
-            await remoteWriter.write(payload);
-          }
+          if (payload.length > 0 && remoteWriter) await remoteWriter.write(payload);
         }
       }
     }
