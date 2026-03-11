@@ -193,17 +193,31 @@ async function manualPipe(readable, responseWriter) {
 export default {
   async fetch(request) {
     const contentType = request.headers.get('content-type') || '';
-    if (request.method !== 'POST' || !contentType.startsWith('application/grpc')) {
+    // ✅ 同时支持 grpc 和 grpc-web（Pages会把grpc转成grpc-web格式）
+    const isGrpc = request.method === 'POST' && (
+      contentType.startsWith('application/grpc') // 含 application/grpc-web
+    );
+    if (!isGrpc) {
       return new Response('Not Found', { status: 404 });
     }
+
     const 当前反代IP = await 反代参数获取(request, 反代IP);
     const { readable, writable } = new TransformStream();
     const responseWriter = writable.getWriter();
+
     processStream(request, responseWriter, 当前反代IP)
       .catch(e => console.error('[流异常]', e.message));
+
+    // ✅ 响应头同时兼容 grpc 和 grpc-web
+    const isGrpcWeb = contentType.includes('grpc-web');
     return new Response(readable, {
       status: 200,
-      headers: { 'Content-Type': 'application/grpc', 'grpc-status': '0' }
+      headers: {
+        'Content-Type': isGrpcWeb ? 'application/grpc-web+proto' : 'application/grpc',
+        'grpc-status': '0',
+        'Access-Control-Allow-Origin': '*',
+        'Access-Control-Expose-Headers': 'grpc-status,grpc-message'
+      }
     });
   }
 };
