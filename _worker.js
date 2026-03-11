@@ -1,7 +1,7 @@
 import { connect } from 'cloudflare:sockets';
 
 // ✅ 你的UUID，支持多个逗号分隔
-const UUID = "58888888-8888-8888-8888-588888888888";
+const UUID = "f9c40315-ce84-4fb9-866e-589eea274e13";
 
 // ✅ 反代IP，支持多个逗号分隔
 const 反代IP = 'sg.wogg.us.kg';
